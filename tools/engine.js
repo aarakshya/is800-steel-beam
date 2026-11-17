@@ -16,7 +16,8 @@ const FAMS = {
   ISJC:{k:"C",t:"ISJC junior channels"}, ISLC:{k:"C",t:"ISLC light channels"}, ISMC:{k:"C",t:"ISMC medium channels"},
   ISMPC:{k:"C",t:"ISMPC parallel flange channels"},
   SHS:{k:"R",t:"SHS square hollow"}, RHS:{k:"R",t:"RHS rectangular hollow"}, CHS:{k:"O",t:"CHS circular hollow"},
-  WELD:{k:"I",t:"Welded I-section from plates",welded:true}
+  WELD:{k:"I",t:"Welded I-section from plates",welded:true},
+  BUILT:{k:"I",t:"Built-up section (section builder)"}
 };
 const SUP_NAME = {ss:"Simply supported", cant:"Cantilever (fixed at left end)", fixed:"Fixed at both ends", propped:"Propped cantilever (fixed left, roller right)", cont2:"Continuous over two spans"};
 const LOAD_NAME = {P:"Point load", U:"Uniform line load", V:"Varying line load", M:"Applied moment"};
@@ -49,6 +50,64 @@ const sg = (x,p=1) => (x>=0?"+":"−")+f(Math.abs(x),p);
 const refLabel = r => /^(\d|Table|Annex)/.test(r) ? "IS 800 "+r : r;
 const strip = s => String(s).replace(/<sub>(.*?)<\/sub>/g,"$1").replace(/<sup>(.*?)<\/sup>/g,"^$1").replace(/<[^>]+>/g,"").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&amp;/g,"&");
 
+// ---------- built-up sections (section builder) ----------
+const BU_TYPES = {plate:"Rolled I-section with cover plates", btb:"Two channels, back to back  ] [", toe:"Two channels, toes facing in  [ ]", side:"Two I-sections, side by side  I I"};
+const BU_I_FAMS = ["ISMB","ISLB","ISWB","ISHB","ISJB","ISSC","NPB","WPB"], BU_C_FAMS = ["ISMC","ISLC","ISMPC","ISJC"];
+function buRprops(R){
+  let A=0,Sx=0,Sy=0; R.forEach(r=>{ const a=(r[1]-r[0])*(r[3]-r[2]); A+=a; Sx+=a*(r[0]+r[1])/2; Sy+=a*(r[2]+r[3])/2; });
+  return {A, xc:Sx/A, yc:Sy/A};
+}
+const buCRects = (D,B,tw,tf) => [[0,tw,-D/2,D/2],[tw,B,D/2-tf,D/2],[tw,B,-D/2,-D/2+tf]];
+function buGeom(c, type, gap){
+  const W=gap+2*c.B; let e;
+  if(type==="side") e=gap/2+c.B/2; else if(type==="toe") e=gap/2+c.B-c.cy; else e=gap/2+c.cy;
+  return {W, e};
+}
+function buGapFor(c, type, ratio){
+  const e2=(ratio*ratio*c.Iz-c.Iy)/c.A; if(!(e2>0)) return 0; const e=Math.sqrt(e2);
+  if(type==="side") return 2*e-c.B; if(type==="toe") return 2*(e-c.B+c.cy); return 2*(e-c.cy);
+}
+function buComp(v, SEC){
+  const c=secProps({fam:v.bFam, sec:v.bSec}, SEC); if(!c) return null;
+  if(c.kind==="C"){ const rp=buRprops(buCRects(c.D,c.B,c.tw,c.tf)); c.cy=rp.xc; }
+  return c;
+}
+function builtProps(v, SEC){
+  const c=buComp(v,SEC); if(!c) return null;
+  const t=v.bType, ROLL=[9.4,10.5,15.7];
+  if(t==="plate"){
+    if(c.kind!=="I") return null;
+    const bp=v.bp, tp=v.tp; if(!(bp>0&&tp>0)) return null;
+    const Ap=bp*tp, yp=(c.D+tp)/2, D=c.D+2*tp, A=c.A+2*Ap, Iz=c.Iz+2*(bp*tp**3/12+Ap*yp*yp), Iy=c.Iy+2*tp*bp**3/12;
+    const els=[{lab:"Rolled flange outstand, b<sub>f</sub>/2", b:c.B/2, t:c.tf, k:ROLL}];
+    if(bp>c.B+1e-9) els.push({lab:"Cover plate outstand beyond the flange tips (welded), (b<sub>p</sub> − b<sub>f</sub>)/2", b:(bp-c.B)/2, t:tp, k:[8.4,9.4,13.6]});
+    els.push({lab:`Cover plate between the welds (internal element), ${bp>c.B?"b<sub>f</sub>":"b<sub>p</sub>"}`, b:Math.min(bp,c.B), t:tp, k:[29.3,33.5,42]});
+    const s={name:`${c.name} + 2 plates ${f(bp,0)} × ${f(tp,0)}`, kind:"I", welded:false, mass:c.mass+2*Ap*7850e-6, A, D, B:Math.max(bp,c.B), tw:c.tw, tf:c.tf, R1:c.R1,
+      Iz, Iy, Zz:2*Iz/D, Zpz:c.Zpz+2*Ap*yp, It:c.It+2*bp*tp**3/3, Iw:Iy*(D-c.tf-tp)**2/4, src:`${c.src}; cover plates added by parallel axes`, itCalc:true, iwCalc:true};
+    s.bu={type:t, comp:c, bp, tp, nweb:1, Dc:c.D, hw:c.D-2*c.tf, dWeb:c.D-2*(c.tf+c.R1), tfTot:c.tf+tp, els,
+      lines:[`${c.name} with a ${f(bp,0)} × ${f(tp,0)} mm plate welded to each flange; overall depth D = ${f(c.D,1)} + 2 × ${f(tp,1)} = <span class="r">${f(D,1)} mm</span>`,
+        `Plate area ${f(Ap,0)} mm² each, at y = (D<sub>rolled</sub> + t<sub>p</sub>)/2 = ${f(yp,1)} mm from the neutral axis`,
+        `I<sub>z</sub> = ${f(c.Iz/1e4,1)} + 2[b<sub>p</sub>t<sub>p</sub>³/12 + A<sub>p</sub>y²] = <span class="r">${f(Iz/1e4,1)} cm⁴</span>; I<sub>y</sub> = ${f(c.Iy/1e4,1)} + 2t<sub>p</sub>b<sub>p</sub>³/12 = ${f(Iy/1e4,1)} cm⁴`,
+        `Z<sub>e,z</sub> = 2I<sub>z</sub>/D = ${f(2*Iz/D/1e3,1)} cm³; Z<sub>p,z</sub> = ${f(c.Zpz/1e3,1)} + 2A<sub>p</sub>y = <span class="r">${f((c.Zpz+2*Ap*yp)/1e3,1)} cm³</span>`],
+      note:"The plates are taken as continuous over the length checked and fully welded to the flanges; the welds and plate curtailment are not designed here. Shear is carried by the rolled web."};
+    return s;
+  }
+  const isC = t==="btb"||t==="toe";
+  if(isC!==(c.kind==="C")) return null;
+  if(!(v.gap>=0)) return null;
+  const g=buGeom(c,t,v.gap), Iy=2*(c.Iy+c.A*g.e*g.e);
+  const s={name:`2 × ${c.name}, ${t==="side"?"side by side":t==="toe"?"toes in":"back to back"}, gap ${f(v.gap,0)} mm`, kind:c.kind, welded:false, mass:2*c.mass, A:2*c.A, D:c.D, B:g.W, tw:c.tw, tf:c.tf, R1:c.R1,
+    Iz:2*c.Iz, Iy, Zz:2*c.Zz, Zpz:2*c.Zpz, It:2*c.It, Iw:Iy*(c.D-c.tf)**2/4, src:`${c.src}; built-up properties by parallel axes`, itCalc:true, iwCalc:true};
+  s.bu={type:t, comp:c, gap:v.gap, e:g.e, W:g.W, nweb:2, Dc:c.D, hw:c.D-2*c.tf, dWeb:c.D-2*(c.tf+c.R1), tfTot:c.tf,
+    els:[{lab:isC?"Flange outstand of each channel, b<sub>f</sub>":"Flange outstand of each I-section, b<sub>f</sub>/2", b:isC?c.B:c.B/2, t:c.tf, k:ROLL}],
+    lines:[`Two ${c.name} ${t==="side"?"side by side":t==="toe"?"with the flange toes facing each other":"back to back"}, clear gap ${f(v.gap,0)} mm, overall width W = ${f(g.W,0)} mm`,
+      `I<sub>z</sub> = 2 × ${f(c.Iz/1e4,1)} = <span class="r">${f(2*c.Iz/1e4,1)} cm⁴</span>; Z<sub>e,z</sub> = ${f(2*c.Zz/1e3,1)} cm³; Z<sub>p,z</sub> = ${f(2*c.Zpz/1e3,1)} cm³`,
+      `Each component centroid is e = ${f(g.e,1)} mm from the centre${isC?` (channel centroid ${f(c.cy,1)} mm from the back of the web)`:""}; I<sub>y</sub> = 2(I<sub>y1</sub> + A<sub>1</sub>e²) = <span class="r">${f(Iy/1e4,1)} cm⁴</span>`,
+      `Two webs carry the shear; I<sub>t</sub> = 2 × ${f(c.It/1e4,2)} cm⁴; I<sub>w</sub> ≈ I<sub>y</sub>h²/4 = ${f(Iy*(c.D-c.tf)**2/4/1e6,0)} cm⁶`],
+    note:"The two members are assumed to be tied together along the span (battens, tie plates or welding) so that they bend as one section; those connections are not designed here. Each load is assumed to be shared equally by the two members."};
+  return s;
+}
+
 function secProps(v, SEC){
   const F = FAMS[v.fam]; if(!F) return null;
   let s;
@@ -58,6 +117,8 @@ function secProps(v, SEC){
     const A=2*B*tf+hw*tw, Iz=(B*D**3-(B-tw)*hw**3)/12, Iy=(2*tf*B**3+hw*tw**3)/12;
     s={name:`Welded I ${f(D,0)} × ${f(B,0)}, web ${f(tw,0)}, flanges ${f(tf,0)}`, kind:"I", welded:true, mass:A*7850e-6, A, D, B, tw, tf, R1:0, Iz, Iy,
        Zz:2*Iz/D, Zpz:B*tf*(D-tf)+tw*hw*hw/4, It:(2*B*tf**3+hw*tw**3)/3, Iw:Iy*(D-tf)**2/4, src:"computed from the plate sizes", itCalc:true, iwCalc:true};
+  } else if(v.fam==="BUILT"){
+    s=builtProps(v,SEC); if(!s) return null;
   } else {
     const row=(SEC[v.fam]||[]).find(r=>r[0]===v.sec); if(!row) return null;
     if(F.k==="I"||F.k==="C"){
@@ -194,7 +255,8 @@ function design(v, SEC){
      `Z<sub>e,z</sub> = ${f(sp.Zz/1e3,1)} cm³, Z<sub>p,z</sub> = ${f(sp.Zpz/1e3,1)} cm³, shape factor = ${f(sp.Zpz/sp.Zz,3)}`,
      kind==="O" ? "" : `I<sub>t</sub> = ${f(sp.It/1e4,2)} cm⁴${sp.itCalc?" (computed)":""}, I<sub>w</sub> = ${f(sp.Iw/1e6,0)} cm⁶${sp.iwCalc&&sp.Iw?" (computed)":""}`],
     sp.itCalc||sp.iwCalc ? "Torsion constants marked computed are found from the plate sizes (I<sub>t</sub> = Σbt³/3, I<sub>w</sub> = I<sub>y</sub>h²/4 for an I-section, Bredt's formula for hollow sections)." : "");
-  const tmax=Math.max(sp.tf,sp.tw), band=tmax<20?0:(tmax<=40?1:2), fy=G.fy[band], fu=G.fu, eps=Math.sqrt(250/fy);
+  if(sp.bu) Sx("Built-up section","Parallel axis theorem",sp.bu.lines,sp.bu.note);
+  const tmax=Math.max(sp.tf,sp.tw,sp.bu&&sp.bu.tp?sp.bu.tp:0), band=tmax<20?0:(tmax<=40?1:2), fy=G.fy[band], fu=G.fu, eps=Math.sqrt(250/fy);
   Sx("Material", "IS 2062:2011 Table 2, IS 800 2.2.4, Table 5",
     [`Grade ${G.n}; thickest element ${f(tmax,1)} mm, so f<sub>y</sub> = <span class="r">${fy} MPa</span> (band ${["< 20","20 to 40","> 40"][band]} mm), f<sub>u</sub> = ${fu} MPa`,
      `E = 2.0 × 10⁵ MPa, G = 0.769 × 10⁵ MPa, γ<sub>m0</sub> = 1.10, γ<sub>m1</sub> = 1.25`,
@@ -204,6 +266,12 @@ function design(v, SEC){
   if(kind==="O"){
     const r=sp.D/sp.t, lim=[42,52,146].map(k=>k*eps*eps), c=r<=lim[0]?0:r<=lim[1]?1:r<=lim[2]?2:3;
     fl={c, r, lim, txt:`Tube in bending, D/t = ${f(sp.D,1)}/${f(sp.t,1)} = <span class="r">${f(r,2)}</span>; limits 42ε² = ${f(lim[0],1)}, 52ε² = ${f(lim[1],1)}, 146ε² = ${f(lim[2],1)}`}; web={c:0, txt:""};
+  } else if(sp.bu){
+    const els=sp.bu.els.map(e=>{ const r=e.b/e.t, l=e.k.map(k=>k*eps), c=r<=l[0]?0:r<=l[1]?1:r<=l[2]?2:3; return {...e,r,l,c}; });
+    const cf=Math.max(...els.map(e=>e.c));
+    fl={c:cf, txt:els.map(e=>`${e.lab}: b/t = ${f(e.b,1)}/${f(e.t,1)} = <span class="r">${f(e.r,2)}</span>; limits ${e.k[0]}ε = ${f(e.l[0],2)}, ${e.k[1]}ε = ${f(e.l[1],2)}, ${e.k[2]}ε = ${f(e.l[2],2)} → ${CLS[e.c]}`).join("<br>")};
+    const d=sp.bu.dWeb, rw=d/sp.tw, lw=[84,105,126].map(k=>k*eps), cw=rw<=lw[0]?0:rw<=lw[1]?1:rw<=lw[2]?2:3;
+    web={c:cw, r:rw, d, lim:lw, txt:`Web${sp.bu.nweb>1?" of each member":""} with neutral axis at mid-depth, d = D<sub>rolled</sub> − 2(t<sub>f</sub> + R<sub>1</sub>) = ${f(d,1)} mm; d/t<sub>w</sub> = <span class="r">${f(rw,2)}</span>; limits 84ε = ${f(lw[0],1)}, 105ε = ${f(lw[1],1)}, 126ε = ${f(lw[2],1)} → ${CLS[cw]}`};
   } else {
     let b, bl, k1;
     if(kind==="R"){ b=sp.B-3*sp.t; k1=[29.3,33.5,42]; bl=`Compression flange (internal element), b = B − 3t = ${f(b,1)} mm`; }
@@ -218,7 +286,7 @@ function design(v, SEC){
     [fl.txt, web.txt, `Section class = <span class="r">${CLS[cls]}</span>; β<sub>b</sub> = ${cls<=1?"1.0 (plastic or compact)":`Z<sub>e</sub>/Z<sub>p</sub> = ${f3(betab)} (semi-compact)`}`],
     cls===3 ? "Slender sections need the effective section of 7.3.2.1 and are not covered by this sheet. Choose a heavier or more compact section." : "");
   C("Section and material","Section is not slender","Table 2, 3.7.2","Plastic, compact or semi-compact",CLS[cls], cls<3);
-  if(isI){ const lim=200*eps, d=sp.D-2*sp.tf; C("Section and material","Web slenderness without stiffeners, d/t<sub>w</sub> ≤ 200ε","8.6.1.1",`≤ ${f(lim,1)}`,f(d/sp.tw,1), d/sp.tw<=lim); }
+  if(isI){ const lim=200*eps, d=sp.bu?sp.bu.hw:sp.D-2*sp.tf; C("Section and material","Web slenderness without stiffeners, d/t<sub>w</sub> ≤ 200ε","8.6.1.1",`≤ ${f(lim,1)}`,f(d/sp.tw,1), d/sp.tw<=lim); }
 
   // ===== B =====
   P("B. Loads and analysis");
@@ -253,6 +321,7 @@ function design(v, SEC){
   let Av, avTxt, dw=null, nweb=1;
   if(kind==="O"){ Av=2*sp.A/Math.PI; avTxt=`A<sub>v</sub> = 2A/π = ${f(Av,0)} mm²`; }
   else if(kind==="R"){ Av=sp.A*sp.D/(sp.B+sp.D); dw=sp.D-3*sp.t; nweb=2; avTxt=`A<sub>v</sub> = AD/(B + D) = ${f(sp.A,0)} × ${f(sp.D,0)}/(${f(sp.B,0)} + ${f(sp.D,0)}) = ${f(Av,0)} mm²`; }
+  else if(sp.bu){ nweb=sp.bu.nweb; dw=sp.bu.hw; Av=nweb*sp.bu.Dc*sp.tw; avTxt=`A<sub>v</sub> = ${nweb>1?"2 × ":""}D<sub>rolled</sub>t<sub>w</sub> = ${nweb>1?"2 × ":""}${f(sp.bu.Dc,1)} × ${f(sp.tw,1)} = ${f(Av,0)} mm² (rolled web${nweb>1?"s":""})`; }
   else if(sp.welded){ dw=sp.D-2*sp.tf; Av=dw*sp.tw; avTxt=`A<sub>v</sub> = d t<sub>w</sub> = ${f(dw,1)} × ${f(sp.tw,1)} = ${f(Av,0)} mm² (welded)`; }
   else { dw=sp.D-2*sp.tf; Av=sp.D*sp.tw; avTxt=`A<sub>v</sub> = D t<sub>w</sub> = ${f(sp.D,1)} × ${f(sp.tw,1)} = ${f(Av,0)} mm² (hot rolled)`; }
   const Vp=Av*fy/Math.sqrt(3)/1e3;
@@ -278,14 +347,14 @@ function design(v, SEC){
   P("D. Bending");
   const capF = v.sup==="cant" ? 1.5 : 1.2;
   const MdP=betab*sp.Zpz*fy/GM0/1e6, MdCap=capF*sp.Zz*fy/GM0/1e6, Md=Math.min(MdP,MdCap);
-  const Mfd = kind==="O" ? 0 : sp.B*sp.tf*(sp.D-sp.tf)*fy/GM0/1e6;
+  const Mfd = kind==="O" ? 0 : sp.bu ? (sp.Zpz-sp.bu.nweb*sp.tw*sp.bu.hw**2/4)*fy/GM0/1e6 : sp.B*sp.tf*(sp.D-sp.tf)*fy/GM0/1e6;
   Sx("Design bending strength, laterally supported","8.2.1.2",
     [`M<sub>d</sub> = β<sub>b</sub>Z<sub>p</sub>f<sub>y</sub>/γ<sub>m0</sub> = ${f3(betab)} × ${f(sp.Zpz/1e3,1)} × 10³ × ${fy}/1.10/10⁶ = ${f(MdP,2)} kN·m`,
      `Limit ${capF}Z<sub>e</sub>f<sub>y</sub>/γ<sub>m0</sub> (${v.sup==="cant"?"cantilever":"beams with spans"}) = ${capF} × ${f(sp.Zz/1e3,1)} × 10³ × ${fy}/1.10/10⁶ = ${f(MdCap,2)} kN·m`,
      `M<sub>d</sub> = <span class="r">${f(Md,2)} kN·m</span>`,
-     kind==="O" ? "" : `Plastic moment of the flanges alone, M<sub>fd</sub> = b<sub>f</sub>t<sub>f</sub>(D − t<sub>f</sub>)f<sub>y</sub>/γ<sub>m0</sub> = ${f(Mfd,2)} kN·m (used for high shear)`]);
+     kind==="O" ? "" : `Plastic moment of the flanges alone, M<sub>fd</sub> = ${sp.bu?"(Z<sub>p</sub> − Σt<sub>w</sub>h<sub>w</sub>²/4)":"b<sub>f</sub>t<sub>f</sub>(D − t<sub>f</sub>)"}f<sub>y</sub>/γ<sub>m0</sub> = ${f(Mfd,2)} kN·m (used for high shear)`]);
   // LTB
-  let ltbApplies = v.lat!=="restrained" && kind!=="O" && !(kind==="R" && sp.Iy>=sp.Iz*0.999);
+  let ltbApplies = v.lat!=="restrained" && kind!=="O" && !(kind==="R" && sp.Iy>=sp.Iz*0.999) && !(sp.bu && sp.Iy>=sp.Iz*0.999);
   let MdLT=Md, LLT=null, Mcr=null, lamLT=null, chi=1, ltbLines=[], ltbNote="";
   if(v.lat==="restrained") ltbLines=["The compression flange is laterally supported along its length, so lateral-torsional buckling does not occur (8.2.1.1)"];
   else if(!ltbApplies) ltbLines=[kind==="O"?"Circular hollow sections do not buckle laterally":"A square hollow section has equal stiffness about both axes and does not buckle laterally"];
@@ -297,17 +366,17 @@ function design(v, SEC){
     const Lm=LLT*1000, a=Math.PI**2*E_S*sp.Iy/(Lm*Lm);
     Mcr=v.C1*Math.sqrt(a*(G_S*sp.It+Math.PI**2*E_S*sp.Iw/(Lm*Lm)));
     lamLT=Math.sqrt(betab*sp.Zpz*fy/Mcr);
-    const aLT=sp.welded?0.49:0.21, phi=0.5*(1+aLT*(lamLT-0.2)+lamLT*lamLT);
+    const aLT=(sp.welded||sp.bu)?0.49:0.21, phi=0.5*(1+aLT*(lamLT-0.2)+lamLT*lamLT);
     chi=Math.min(1/(phi+Math.sqrt(phi*phi-lamLT*lamLT)),1);
     const fbd=chi*fy/GM0, MdL=betab*sp.Zpz*fbd/1e6;
     if(lamLT<=0.4){ MdLT=Md; ltbNote="λ<sub>LT</sub> ≤ 0.4, so lateral-torsional buckling need not be considered (8.2.2)."; }
     else MdLT=Math.min(MdL,Md);
     ltbLines=[lt, `Laterally unsupported length L = ${f(v.Lu,3)} m, so L<sub>LT</sub> = <span class="r">${f(LLT,3)} m</span>`,
       `M<sub>cr</sub> = C<sub>1</sub>√{(π²EI<sub>y</sub>/L<sub>LT</sub>²)[GI<sub>t</sub> + π²EI<sub>w</sub>/L<sub>LT</sub>²]} with C<sub>1</sub> = ${f(v.C1,3)}: π²EI<sub>y</sub>/L<sub>LT</sub>² = ${f(a/1e3,1)} kN; M<sub>cr</sub> = <span class="r">${f(Mcr/1e6,2)} kN·m</span>`,
-      `λ<sub>LT</sub> = √(β<sub>b</sub>Z<sub>p</sub>f<sub>y</sub>/M<sub>cr</sub>) = <span class="r">${f3(lamLT)}</span>; α<sub>LT</sub> = ${aLT} (${sp.welded?"welded":"rolled"})`,
+      `λ<sub>LT</sub> = √(β<sub>b</sub>Z<sub>p</sub>f<sub>y</sub>/M<sub>cr</sub>) = <span class="r">${f3(lamLT)}</span>; α<sub>LT</sub> = ${aLT} (${sp.welded?"welded":sp.bu?"built-up, taken as welded":"rolled"})`,
       `φ<sub>LT</sub> = 0.5[1 + α<sub>LT</sub>(λ<sub>LT</sub> − 0.2) + λ<sub>LT</sub>²] = ${f3(phi)}; χ<sub>LT</sub> = 1/[φ<sub>LT</sub> + √(φ<sub>LT</sub>² − λ<sub>LT</sub>²)] = <span class="r">${f3(chi)}</span>`,
       `f<sub>bd</sub> = χ<sub>LT</sub>f<sub>y</sub>/γ<sub>m0</sub> = ${f(fbd,1)} MPa; M<sub>d</sub> = β<sub>b</sub>Z<sub>p</sub>f<sub>bd</sub> = <span class="r">${f(MdL,2)} kN·m</span>${MdL>Md?` (capped at ${f(Md,2)} kN·m)`:""}`];
-    if(kind==="C") ltbNote=(ltbNote?ltbNote+" ":"")+"For a channel the formula assumes the load passes through the shear centre. Loads on the web face add torsion, which this sheet does not cover.";
+    if(kind==="C" && !sp.bu) ltbNote=(ltbNote?ltbNote+" ":"")+"For a channel the formula assumes the load passes through the shear centre. Loads on the web face add torsion, which this sheet does not cover.";
     if(v.C1!==1) ltbNote=(ltbNote?ltbNote+" ":"")+"C<sub>1</sub> other than 1.0 must match the moment shape in Annex E, Table 42.";
   }
   Sx("Lateral-torsional buckling","8.2.2, 8.3, Annex E", ltbLines, ltbNote);
@@ -333,7 +402,7 @@ function design(v, SEC){
     U.reac.forEach((r,i)=>{ if(r.Rv>0.01) webs.push({x:r.x, F:r.Rv, lab:`Support ${i+1}`, b1:v.b1s}); });
     const pts={}; U.loads.forEach(l=>{ if(l.k==="P" && l.P>0){ const k=l.x.toFixed(4); pts[k]=(pts[k]||0)+l.P; } });
     Object.keys(pts).forEach(k=>{ const x=+k; if(A.sups.some(s=>Math.abs(s.x-x)<1e-6)) return; webs.push({x, F:pts[k], lab:`Point load at x = ${f(x,3)} m`, b1:v.b1p}); });
-    const tw=nweb*sp.tw, dcl = kind==="R" ? sp.D-3*sp.t : sp.D-2*(sp.tf+sp.R1), n2s=2.5*(sp.tf+sp.R1), n1s=sp.D/2;
+    const tw=nweb*sp.tw, dcl = sp.bu ? sp.bu.dWeb : kind==="R" ? sp.D-3*sp.t : sp.D-2*(sp.tf+sp.R1), n2s=2.5*((sp.bu?sp.bu.tfTot:sp.tf)+sp.R1), n1s=sp.D/2;
     const lam=2.5*dcl/sp.tw, lamN=Math.sqrt(fy*lam*lam/(Math.PI**2*E_S)), ph=0.5*(1+0.49*(lamN-0.2)+lamN*lamN), fcd=Math.min(fy/GM0/(ph+Math.sqrt(ph*ph-lamN*lamN)), fy/GM0);
     webs.forEach(w=>{
       const left=Math.max(0,w.x*1000-w.b1/2), right=Math.max(0,(v.L-w.x)*1000-w.b1/2);
@@ -427,4 +496,4 @@ function inputRows(v,sp){
   r.push(["Deflection limits", v.defl==="custom" ? `span/${v.nSpan}, cantilever/${v.nCant}` : `${DEFL[v.defl][0]} (span/${DEFL[v.defl][1]}, cantilever/${DEFL[v.defl][2]})`, ""]);
   return r;
 }
-if(typeof module!=="undefined") module.exports={design,secProps,solveBeam,statics,GRADES,FAMS,analyse};
+if(typeof module!=="undefined") module.exports={design,secProps,solveBeam,statics,GRADES,FAMS,analyse,builtProps,buGapFor,buComp};

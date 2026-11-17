@@ -113,12 +113,17 @@ tr.total td{font-weight:600;background:#f7f6f1;border-top:2px solid var(--ink)}
 h4{font-size:13.5px;margin:18px 0 8px}
 .refs li{font-size:13px;margin:3px 0}
 .footnote{font-size:12.5px;color:var(--muted);text-align:center;margin:4px 0 0;padding-top:10px;border-top:1px solid var(--line)}
+.bu{border:1px solid var(--line);border-radius:8px;background:#fcfbf8;padding:8px 10px;margin:8px 0}
+.bu svg{display:block;width:100%;height:auto;background:#fff;border:1px solid var(--line);border-radius:6px;touch-action:none}
+.bu .drag:hover circle+circle{fill:#b9cde0}
+.bu .drag:hover path{fill:#b9cde0}
+.bu svg line,.bu svg text{pointer-events:none}
 </style>
 </head>
 <body>
 <header>
   <h1>Steel Beam Design to IS 800:2007</h1>
-  <p>Rolled I-sections, channels and hollow sections from the Indian tables, or a welded plate girder: point, uniform and varying loads, five support conditions, classification, shear, bending with lateral-torsional buckling, moment with high shear, web bearing and buckling, and deflection. Limit state method, SI units.</p>
+  <p>Rolled I-sections, channels and hollow sections from the Indian tables, a welded plate girder, or a built-up section (rolled I with cover plates, two channels, two I-sections) made in the section builder: point, uniform and varying loads, five support conditions, classification, shear, bending with lateral-torsional buckling, moment with high shear, web bearing and buckling, and deflection. Limit state method, SI units.</p>
 </header>
 
 <div class="wrap">
@@ -138,6 +143,23 @@ h4{font-size:13.5px;margin:18px 0 8px}
     <div class="field"><label>Flange width, b<sub>f</sub></label><input id="wB" type="number" step="any"><span class="u">mm</span></div>
     <div class="field"><label>Web thickness, t<sub>w</sub></label><input id="wtw" type="number" step="any"><span class="u">mm</span></div>
     <div class="field"><label>Flange thickness, t<sub>f</sub></label><input id="wtf" type="number" step="any"><span class="u">mm</span></div>
+  </div>
+  <div id="bu_rows" hidden>
+    <div class="field wide"><label>Build-up</label><select id="bType"></select></div>
+    <div class="field wide"><label>Member type</label><select id="bFam"></select></div>
+    <div class="field wide"><label>Member</label><select id="bSec"></select></div>
+    <div id="plate_rows">
+      <div class="field"><label>Cover plate width, b<sub>p</sub></label><input id="bp" type="number" step="any"><span class="u">mm</span></div>
+      <div class="field"><label>Cover plate thickness, t<sub>p</sub></label><input id="tp" type="number" step="any"><span class="u">mm</span></div>
+    </div>
+    <div class="field" id="gap_row"><label>Clear gap between members, g</label><input id="gap" type="number" step="any" min="0"><span class="u">mm</span></div>
+  </div>
+  <div class="bu" id="bu_box" hidden>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5px"><b style="font-size:10.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--muted)">Section builder</b></div>
+    <svg id="bu_svg" viewBox="0 0 340 210" role="img" aria-label="Section builder"></svg>
+    <p class="note" id="bu_hint" style="margin:5px 0 0"></p>
+    <div class="props" id="bu_props" style="margin-top:6px"></div>
+    <div class="btns" id="bu_btns" style="margin-top:4px"></div>
   </div>
   <div class="props" id="props"></div>
   <div class="btns" style="margin-top:6px"><button type="button" class="ghost small" id="lightest">Find the lightest passing section of this type</button></div>
@@ -290,7 +312,8 @@ const FAMS = {
   ISJC:{k:"C",t:"ISJC junior channels"}, ISLC:{k:"C",t:"ISLC light channels"}, ISMC:{k:"C",t:"ISMC medium channels"},
   ISMPC:{k:"C",t:"ISMPC parallel flange channels"},
   SHS:{k:"R",t:"SHS square hollow"}, RHS:{k:"R",t:"RHS rectangular hollow"}, CHS:{k:"O",t:"CHS circular hollow"},
-  WELD:{k:"I",t:"Welded I-section from plates",welded:true}
+  WELD:{k:"I",t:"Welded I-section from plates",welded:true},
+  BUILT:{k:"I",t:"Built-up section (section builder)"}
 };
 const SUP_NAME = {ss:"Simply supported", cant:"Cantilever (fixed at left end)", fixed:"Fixed at both ends", propped:"Propped cantilever (fixed left, roller right)", cont2:"Continuous over two spans"};
 const LOAD_NAME = {P:"Point load", U:"Uniform line load", V:"Varying line load", M:"Applied moment"};
@@ -323,6 +346,64 @@ const sg = (x,p=1) => (x>=0?"+":"−")+f(Math.abs(x),p);
 const refLabel = r => /^(\d|Table|Annex)/.test(r) ? "IS 800 "+r : r;
 const strip = s => String(s).replace(/<sub>(.*?)<\/sub>/g,"$1").replace(/<sup>(.*?)<\/sup>/g,"^$1").replace(/<[^>]+>/g,"").replace(/&lt;/g,"<").replace(/&gt;/g,">").replace(/&amp;/g,"&");
 
+// ---------- built-up sections (section builder) ----------
+const BU_TYPES = {plate:"Rolled I-section with cover plates", btb:"Two channels, back to back  ] [", toe:"Two channels, toes facing in  [ ]", side:"Two I-sections, side by side  I I"};
+const BU_I_FAMS = ["ISMB","ISLB","ISWB","ISHB","ISJB","ISSC","NPB","WPB"], BU_C_FAMS = ["ISMC","ISLC","ISMPC","ISJC"];
+function buRprops(R){
+  let A=0,Sx=0,Sy=0; R.forEach(r=>{ const a=(r[1]-r[0])*(r[3]-r[2]); A+=a; Sx+=a*(r[0]+r[1])/2; Sy+=a*(r[2]+r[3])/2; });
+  return {A, xc:Sx/A, yc:Sy/A};
+}
+const buCRects = (D,B,tw,tf) => [[0,tw,-D/2,D/2],[tw,B,D/2-tf,D/2],[tw,B,-D/2,-D/2+tf]];
+function buGeom(c, type, gap){
+  const W=gap+2*c.B; let e;
+  if(type==="side") e=gap/2+c.B/2; else if(type==="toe") e=gap/2+c.B-c.cy; else e=gap/2+c.cy;
+  return {W, e};
+}
+function buGapFor(c, type, ratio){
+  const e2=(ratio*ratio*c.Iz-c.Iy)/c.A; if(!(e2>0)) return 0; const e=Math.sqrt(e2);
+  if(type==="side") return 2*e-c.B; if(type==="toe") return 2*(e-c.B+c.cy); return 2*(e-c.cy);
+}
+function buComp(v, SEC){
+  const c=secProps({fam:v.bFam, sec:v.bSec}, SEC); if(!c) return null;
+  if(c.kind==="C"){ const rp=buRprops(buCRects(c.D,c.B,c.tw,c.tf)); c.cy=rp.xc; }
+  return c;
+}
+function builtProps(v, SEC){
+  const c=buComp(v,SEC); if(!c) return null;
+  const t=v.bType, ROLL=[9.4,10.5,15.7];
+  if(t==="plate"){
+    if(c.kind!=="I") return null;
+    const bp=v.bp, tp=v.tp; if(!(bp>0&&tp>0)) return null;
+    const Ap=bp*tp, yp=(c.D+tp)/2, D=c.D+2*tp, A=c.A+2*Ap, Iz=c.Iz+2*(bp*tp**3/12+Ap*yp*yp), Iy=c.Iy+2*tp*bp**3/12;
+    const els=[{lab:"Rolled flange outstand, b<sub>f</sub>/2", b:c.B/2, t:c.tf, k:ROLL}];
+    if(bp>c.B+1e-9) els.push({lab:"Cover plate outstand beyond the flange tips (welded), (b<sub>p</sub> − b<sub>f</sub>)/2", b:(bp-c.B)/2, t:tp, k:[8.4,9.4,13.6]});
+    els.push({lab:`Cover plate between the welds (internal element), ${bp>c.B?"b<sub>f</sub>":"b<sub>p</sub>"}`, b:Math.min(bp,c.B), t:tp, k:[29.3,33.5,42]});
+    const s={name:`${c.name} + 2 plates ${f(bp,0)} × ${f(tp,0)}`, kind:"I", welded:false, mass:c.mass+2*Ap*7850e-6, A, D, B:Math.max(bp,c.B), tw:c.tw, tf:c.tf, R1:c.R1,
+      Iz, Iy, Zz:2*Iz/D, Zpz:c.Zpz+2*Ap*yp, It:c.It+2*bp*tp**3/3, Iw:Iy*(D-c.tf-tp)**2/4, src:`${c.src}; cover plates added by parallel axes`, itCalc:true, iwCalc:true};
+    s.bu={type:t, comp:c, bp, tp, nweb:1, Dc:c.D, hw:c.D-2*c.tf, dWeb:c.D-2*(c.tf+c.R1), tfTot:c.tf+tp, els,
+      lines:[`${c.name} with a ${f(bp,0)} × ${f(tp,0)} mm plate welded to each flange; overall depth D = ${f(c.D,1)} + 2 × ${f(tp,1)} = <span class="r">${f(D,1)} mm</span>`,
+        `Plate area ${f(Ap,0)} mm² each, at y = (D<sub>rolled</sub> + t<sub>p</sub>)/2 = ${f(yp,1)} mm from the neutral axis`,
+        `I<sub>z</sub> = ${f(c.Iz/1e4,1)} + 2[b<sub>p</sub>t<sub>p</sub>³/12 + A<sub>p</sub>y²] = <span class="r">${f(Iz/1e4,1)} cm⁴</span>; I<sub>y</sub> = ${f(c.Iy/1e4,1)} + 2t<sub>p</sub>b<sub>p</sub>³/12 = ${f(Iy/1e4,1)} cm⁴`,
+        `Z<sub>e,z</sub> = 2I<sub>z</sub>/D = ${f(2*Iz/D/1e3,1)} cm³; Z<sub>p,z</sub> = ${f(c.Zpz/1e3,1)} + 2A<sub>p</sub>y = <span class="r">${f((c.Zpz+2*Ap*yp)/1e3,1)} cm³</span>`],
+      note:"The plates are taken as continuous over the length checked and fully welded to the flanges; the welds and plate curtailment are not designed here. Shear is carried by the rolled web."};
+    return s;
+  }
+  const isC = t==="btb"||t==="toe";
+  if(isC!==(c.kind==="C")) return null;
+  if(!(v.gap>=0)) return null;
+  const g=buGeom(c,t,v.gap), Iy=2*(c.Iy+c.A*g.e*g.e);
+  const s={name:`2 × ${c.name}, ${t==="side"?"side by side":t==="toe"?"toes in":"back to back"}, gap ${f(v.gap,0)} mm`, kind:c.kind, welded:false, mass:2*c.mass, A:2*c.A, D:c.D, B:g.W, tw:c.tw, tf:c.tf, R1:c.R1,
+    Iz:2*c.Iz, Iy, Zz:2*c.Zz, Zpz:2*c.Zpz, It:2*c.It, Iw:Iy*(c.D-c.tf)**2/4, src:`${c.src}; built-up properties by parallel axes`, itCalc:true, iwCalc:true};
+  s.bu={type:t, comp:c, gap:v.gap, e:g.e, W:g.W, nweb:2, Dc:c.D, hw:c.D-2*c.tf, dWeb:c.D-2*(c.tf+c.R1), tfTot:c.tf,
+    els:[{lab:isC?"Flange outstand of each channel, b<sub>f</sub>":"Flange outstand of each I-section, b<sub>f</sub>/2", b:isC?c.B:c.B/2, t:c.tf, k:ROLL}],
+    lines:[`Two ${c.name} ${t==="side"?"side by side":t==="toe"?"with the flange toes facing each other":"back to back"}, clear gap ${f(v.gap,0)} mm, overall width W = ${f(g.W,0)} mm`,
+      `I<sub>z</sub> = 2 × ${f(c.Iz/1e4,1)} = <span class="r">${f(2*c.Iz/1e4,1)} cm⁴</span>; Z<sub>e,z</sub> = ${f(2*c.Zz/1e3,1)} cm³; Z<sub>p,z</sub> = ${f(2*c.Zpz/1e3,1)} cm³`,
+      `Each component centroid is e = ${f(g.e,1)} mm from the centre${isC?` (channel centroid ${f(c.cy,1)} mm from the back of the web)`:""}; I<sub>y</sub> = 2(I<sub>y1</sub> + A<sub>1</sub>e²) = <span class="r">${f(Iy/1e4,1)} cm⁴</span>`,
+      `Two webs carry the shear; I<sub>t</sub> = 2 × ${f(c.It/1e4,2)} cm⁴; I<sub>w</sub> ≈ I<sub>y</sub>h²/4 = ${f(Iy*(c.D-c.tf)**2/4/1e6,0)} cm⁶`],
+    note:"The two members are assumed to be tied together along the span (battens, tie plates or welding) so that they bend as one section; those connections are not designed here. Each load is assumed to be shared equally by the two members."};
+  return s;
+}
+
 function secProps(v, SEC){
   const F = FAMS[v.fam]; if(!F) return null;
   let s;
@@ -332,6 +413,8 @@ function secProps(v, SEC){
     const A=2*B*tf+hw*tw, Iz=(B*D**3-(B-tw)*hw**3)/12, Iy=(2*tf*B**3+hw*tw**3)/12;
     s={name:`Welded I ${f(D,0)} × ${f(B,0)}, web ${f(tw,0)}, flanges ${f(tf,0)}`, kind:"I", welded:true, mass:A*7850e-6, A, D, B, tw, tf, R1:0, Iz, Iy,
        Zz:2*Iz/D, Zpz:B*tf*(D-tf)+tw*hw*hw/4, It:(2*B*tf**3+hw*tw**3)/3, Iw:Iy*(D-tf)**2/4, src:"computed from the plate sizes", itCalc:true, iwCalc:true};
+  } else if(v.fam==="BUILT"){
+    s=builtProps(v,SEC); if(!s) return null;
   } else {
     const row=(SEC[v.fam]||[]).find(r=>r[0]===v.sec); if(!row) return null;
     if(F.k==="I"||F.k==="C"){
@@ -468,7 +551,8 @@ function design(v, SEC){
      `Z<sub>e,z</sub> = ${f(sp.Zz/1e3,1)} cm³, Z<sub>p,z</sub> = ${f(sp.Zpz/1e3,1)} cm³, shape factor = ${f(sp.Zpz/sp.Zz,3)}`,
      kind==="O" ? "" : `I<sub>t</sub> = ${f(sp.It/1e4,2)} cm⁴${sp.itCalc?" (computed)":""}, I<sub>w</sub> = ${f(sp.Iw/1e6,0)} cm⁶${sp.iwCalc&&sp.Iw?" (computed)":""}`],
     sp.itCalc||sp.iwCalc ? "Torsion constants marked computed are found from the plate sizes (I<sub>t</sub> = Σbt³/3, I<sub>w</sub> = I<sub>y</sub>h²/4 for an I-section, Bredt's formula for hollow sections)." : "");
-  const tmax=Math.max(sp.tf,sp.tw), band=tmax<20?0:(tmax<=40?1:2), fy=G.fy[band], fu=G.fu, eps=Math.sqrt(250/fy);
+  if(sp.bu) Sx("Built-up section","Parallel axis theorem",sp.bu.lines,sp.bu.note);
+  const tmax=Math.max(sp.tf,sp.tw,sp.bu&&sp.bu.tp?sp.bu.tp:0), band=tmax<20?0:(tmax<=40?1:2), fy=G.fy[band], fu=G.fu, eps=Math.sqrt(250/fy);
   Sx("Material", "IS 2062:2011 Table 2, IS 800 2.2.4, Table 5",
     [`Grade ${G.n}; thickest element ${f(tmax,1)} mm, so f<sub>y</sub> = <span class="r">${fy} MPa</span> (band ${["< 20","20 to 40","> 40"][band]} mm), f<sub>u</sub> = ${fu} MPa`,
      `E = 2.0 × 10⁵ MPa, G = 0.769 × 10⁵ MPa, γ<sub>m0</sub> = 1.10, γ<sub>m1</sub> = 1.25`,
@@ -478,6 +562,12 @@ function design(v, SEC){
   if(kind==="O"){
     const r=sp.D/sp.t, lim=[42,52,146].map(k=>k*eps*eps), c=r<=lim[0]?0:r<=lim[1]?1:r<=lim[2]?2:3;
     fl={c, r, lim, txt:`Tube in bending, D/t = ${f(sp.D,1)}/${f(sp.t,1)} = <span class="r">${f(r,2)}</span>; limits 42ε² = ${f(lim[0],1)}, 52ε² = ${f(lim[1],1)}, 146ε² = ${f(lim[2],1)}`}; web={c:0, txt:""};
+  } else if(sp.bu){
+    const els=sp.bu.els.map(e=>{ const r=e.b/e.t, l=e.k.map(k=>k*eps), c=r<=l[0]?0:r<=l[1]?1:r<=l[2]?2:3; return {...e,r,l,c}; });
+    const cf=Math.max(...els.map(e=>e.c));
+    fl={c:cf, txt:els.map(e=>`${e.lab}: b/t = ${f(e.b,1)}/${f(e.t,1)} = <span class="r">${f(e.r,2)}</span>; limits ${e.k[0]}ε = ${f(e.l[0],2)}, ${e.k[1]}ε = ${f(e.l[1],2)}, ${e.k[2]}ε = ${f(e.l[2],2)} → ${CLS[e.c]}`).join("<br>")};
+    const d=sp.bu.dWeb, rw=d/sp.tw, lw=[84,105,126].map(k=>k*eps), cw=rw<=lw[0]?0:rw<=lw[1]?1:rw<=lw[2]?2:3;
+    web={c:cw, r:rw, d, lim:lw, txt:`Web${sp.bu.nweb>1?" of each member":""} with neutral axis at mid-depth, d = D<sub>rolled</sub> − 2(t<sub>f</sub> + R<sub>1</sub>) = ${f(d,1)} mm; d/t<sub>w</sub> = <span class="r">${f(rw,2)}</span>; limits 84ε = ${f(lw[0],1)}, 105ε = ${f(lw[1],1)}, 126ε = ${f(lw[2],1)} → ${CLS[cw]}`};
   } else {
     let b, bl, k1;
     if(kind==="R"){ b=sp.B-3*sp.t; k1=[29.3,33.5,42]; bl=`Compression flange (internal element), b = B − 3t = ${f(b,1)} mm`; }
@@ -492,7 +582,7 @@ function design(v, SEC){
     [fl.txt, web.txt, `Section class = <span class="r">${CLS[cls]}</span>; β<sub>b</sub> = ${cls<=1?"1.0 (plastic or compact)":`Z<sub>e</sub>/Z<sub>p</sub> = ${f3(betab)} (semi-compact)`}`],
     cls===3 ? "Slender sections need the effective section of 7.3.2.1 and are not covered by this sheet. Choose a heavier or more compact section." : "");
   C("Section and material","Section is not slender","Table 2, 3.7.2","Plastic, compact or semi-compact",CLS[cls], cls<3);
-  if(isI){ const lim=200*eps, d=sp.D-2*sp.tf; C("Section and material","Web slenderness without stiffeners, d/t<sub>w</sub> ≤ 200ε","8.6.1.1",`≤ ${f(lim,1)}`,f(d/sp.tw,1), d/sp.tw<=lim); }
+  if(isI){ const lim=200*eps, d=sp.bu?sp.bu.hw:sp.D-2*sp.tf; C("Section and material","Web slenderness without stiffeners, d/t<sub>w</sub> ≤ 200ε","8.6.1.1",`≤ ${f(lim,1)}`,f(d/sp.tw,1), d/sp.tw<=lim); }
 
   // ===== B =====
   P("B. Loads and analysis");
@@ -527,6 +617,7 @@ function design(v, SEC){
   let Av, avTxt, dw=null, nweb=1;
   if(kind==="O"){ Av=2*sp.A/Math.PI; avTxt=`A<sub>v</sub> = 2A/π = ${f(Av,0)} mm²`; }
   else if(kind==="R"){ Av=sp.A*sp.D/(sp.B+sp.D); dw=sp.D-3*sp.t; nweb=2; avTxt=`A<sub>v</sub> = AD/(B + D) = ${f(sp.A,0)} × ${f(sp.D,0)}/(${f(sp.B,0)} + ${f(sp.D,0)}) = ${f(Av,0)} mm²`; }
+  else if(sp.bu){ nweb=sp.bu.nweb; dw=sp.bu.hw; Av=nweb*sp.bu.Dc*sp.tw; avTxt=`A<sub>v</sub> = ${nweb>1?"2 × ":""}D<sub>rolled</sub>t<sub>w</sub> = ${nweb>1?"2 × ":""}${f(sp.bu.Dc,1)} × ${f(sp.tw,1)} = ${f(Av,0)} mm² (rolled web${nweb>1?"s":""})`; }
   else if(sp.welded){ dw=sp.D-2*sp.tf; Av=dw*sp.tw; avTxt=`A<sub>v</sub> = d t<sub>w</sub> = ${f(dw,1)} × ${f(sp.tw,1)} = ${f(Av,0)} mm² (welded)`; }
   else { dw=sp.D-2*sp.tf; Av=sp.D*sp.tw; avTxt=`A<sub>v</sub> = D t<sub>w</sub> = ${f(sp.D,1)} × ${f(sp.tw,1)} = ${f(Av,0)} mm² (hot rolled)`; }
   const Vp=Av*fy/Math.sqrt(3)/1e3;
@@ -552,14 +643,14 @@ function design(v, SEC){
   P("D. Bending");
   const capF = v.sup==="cant" ? 1.5 : 1.2;
   const MdP=betab*sp.Zpz*fy/GM0/1e6, MdCap=capF*sp.Zz*fy/GM0/1e6, Md=Math.min(MdP,MdCap);
-  const Mfd = kind==="O" ? 0 : sp.B*sp.tf*(sp.D-sp.tf)*fy/GM0/1e6;
+  const Mfd = kind==="O" ? 0 : sp.bu ? (sp.Zpz-sp.bu.nweb*sp.tw*sp.bu.hw**2/4)*fy/GM0/1e6 : sp.B*sp.tf*(sp.D-sp.tf)*fy/GM0/1e6;
   Sx("Design bending strength, laterally supported","8.2.1.2",
     [`M<sub>d</sub> = β<sub>b</sub>Z<sub>p</sub>f<sub>y</sub>/γ<sub>m0</sub> = ${f3(betab)} × ${f(sp.Zpz/1e3,1)} × 10³ × ${fy}/1.10/10⁶ = ${f(MdP,2)} kN·m`,
      `Limit ${capF}Z<sub>e</sub>f<sub>y</sub>/γ<sub>m0</sub> (${v.sup==="cant"?"cantilever":"beams with spans"}) = ${capF} × ${f(sp.Zz/1e3,1)} × 10³ × ${fy}/1.10/10⁶ = ${f(MdCap,2)} kN·m`,
      `M<sub>d</sub> = <span class="r">${f(Md,2)} kN·m</span>`,
-     kind==="O" ? "" : `Plastic moment of the flanges alone, M<sub>fd</sub> = b<sub>f</sub>t<sub>f</sub>(D − t<sub>f</sub>)f<sub>y</sub>/γ<sub>m0</sub> = ${f(Mfd,2)} kN·m (used for high shear)`]);
+     kind==="O" ? "" : `Plastic moment of the flanges alone, M<sub>fd</sub> = ${sp.bu?"(Z<sub>p</sub> − Σt<sub>w</sub>h<sub>w</sub>²/4)":"b<sub>f</sub>t<sub>f</sub>(D − t<sub>f</sub>)"}f<sub>y</sub>/γ<sub>m0</sub> = ${f(Mfd,2)} kN·m (used for high shear)`]);
   // LTB
-  let ltbApplies = v.lat!=="restrained" && kind!=="O" && !(kind==="R" && sp.Iy>=sp.Iz*0.999);
+  let ltbApplies = v.lat!=="restrained" && kind!=="O" && !(kind==="R" && sp.Iy>=sp.Iz*0.999) && !(sp.bu && sp.Iy>=sp.Iz*0.999);
   let MdLT=Md, LLT=null, Mcr=null, lamLT=null, chi=1, ltbLines=[], ltbNote="";
   if(v.lat==="restrained") ltbLines=["The compression flange is laterally supported along its length, so lateral-torsional buckling does not occur (8.2.1.1)"];
   else if(!ltbApplies) ltbLines=[kind==="O"?"Circular hollow sections do not buckle laterally":"A square hollow section has equal stiffness about both axes and does not buckle laterally"];
@@ -571,17 +662,17 @@ function design(v, SEC){
     const Lm=LLT*1000, a=Math.PI**2*E_S*sp.Iy/(Lm*Lm);
     Mcr=v.C1*Math.sqrt(a*(G_S*sp.It+Math.PI**2*E_S*sp.Iw/(Lm*Lm)));
     lamLT=Math.sqrt(betab*sp.Zpz*fy/Mcr);
-    const aLT=sp.welded?0.49:0.21, phi=0.5*(1+aLT*(lamLT-0.2)+lamLT*lamLT);
+    const aLT=(sp.welded||sp.bu)?0.49:0.21, phi=0.5*(1+aLT*(lamLT-0.2)+lamLT*lamLT);
     chi=Math.min(1/(phi+Math.sqrt(phi*phi-lamLT*lamLT)),1);
     const fbd=chi*fy/GM0, MdL=betab*sp.Zpz*fbd/1e6;
     if(lamLT<=0.4){ MdLT=Md; ltbNote="λ<sub>LT</sub> ≤ 0.4, so lateral-torsional buckling need not be considered (8.2.2)."; }
     else MdLT=Math.min(MdL,Md);
     ltbLines=[lt, `Laterally unsupported length L = ${f(v.Lu,3)} m, so L<sub>LT</sub> = <span class="r">${f(LLT,3)} m</span>`,
       `M<sub>cr</sub> = C<sub>1</sub>√{(π²EI<sub>y</sub>/L<sub>LT</sub>²)[GI<sub>t</sub> + π²EI<sub>w</sub>/L<sub>LT</sub>²]} with C<sub>1</sub> = ${f(v.C1,3)}: π²EI<sub>y</sub>/L<sub>LT</sub>² = ${f(a/1e3,1)} kN; M<sub>cr</sub> = <span class="r">${f(Mcr/1e6,2)} kN·m</span>`,
-      `λ<sub>LT</sub> = √(β<sub>b</sub>Z<sub>p</sub>f<sub>y</sub>/M<sub>cr</sub>) = <span class="r">${f3(lamLT)}</span>; α<sub>LT</sub> = ${aLT} (${sp.welded?"welded":"rolled"})`,
+      `λ<sub>LT</sub> = √(β<sub>b</sub>Z<sub>p</sub>f<sub>y</sub>/M<sub>cr</sub>) = <span class="r">${f3(lamLT)}</span>; α<sub>LT</sub> = ${aLT} (${sp.welded?"welded":sp.bu?"built-up, taken as welded":"rolled"})`,
       `φ<sub>LT</sub> = 0.5[1 + α<sub>LT</sub>(λ<sub>LT</sub> − 0.2) + λ<sub>LT</sub>²] = ${f3(phi)}; χ<sub>LT</sub> = 1/[φ<sub>LT</sub> + √(φ<sub>LT</sub>² − λ<sub>LT</sub>²)] = <span class="r">${f3(chi)}</span>`,
       `f<sub>bd</sub> = χ<sub>LT</sub>f<sub>y</sub>/γ<sub>m0</sub> = ${f(fbd,1)} MPa; M<sub>d</sub> = β<sub>b</sub>Z<sub>p</sub>f<sub>bd</sub> = <span class="r">${f(MdL,2)} kN·m</span>${MdL>Md?` (capped at ${f(Md,2)} kN·m)`:""}`];
-    if(kind==="C") ltbNote=(ltbNote?ltbNote+" ":"")+"For a channel the formula assumes the load passes through the shear centre. Loads on the web face add torsion, which this sheet does not cover.";
+    if(kind==="C" && !sp.bu) ltbNote=(ltbNote?ltbNote+" ":"")+"For a channel the formula assumes the load passes through the shear centre. Loads on the web face add torsion, which this sheet does not cover.";
     if(v.C1!==1) ltbNote=(ltbNote?ltbNote+" ":"")+"C<sub>1</sub> other than 1.0 must match the moment shape in Annex E, Table 42.";
   }
   Sx("Lateral-torsional buckling","8.2.2, 8.3, Annex E", ltbLines, ltbNote);
@@ -607,7 +698,7 @@ function design(v, SEC){
     U.reac.forEach((r,i)=>{ if(r.Rv>0.01) webs.push({x:r.x, F:r.Rv, lab:`Support ${i+1}`, b1:v.b1s}); });
     const pts={}; U.loads.forEach(l=>{ if(l.k==="P" && l.P>0){ const k=l.x.toFixed(4); pts[k]=(pts[k]||0)+l.P; } });
     Object.keys(pts).forEach(k=>{ const x=+k; if(A.sups.some(s=>Math.abs(s.x-x)<1e-6)) return; webs.push({x, F:pts[k], lab:`Point load at x = ${f(x,3)} m`, b1:v.b1p}); });
-    const tw=nweb*sp.tw, dcl = kind==="R" ? sp.D-3*sp.t : sp.D-2*(sp.tf+sp.R1), n2s=2.5*(sp.tf+sp.R1), n1s=sp.D/2;
+    const tw=nweb*sp.tw, dcl = sp.bu ? sp.bu.dWeb : kind==="R" ? sp.D-3*sp.t : sp.D-2*(sp.tf+sp.R1), n2s=2.5*((sp.bu?sp.bu.tfTot:sp.tf)+sp.R1), n1s=sp.D/2;
     const lam=2.5*dcl/sp.tw, lamN=Math.sqrt(fy*lam*lam/(Math.PI**2*E_S)), ph=0.5*(1+0.49*(lamN-0.2)+lamN*lamN), fcd=Math.min(fy/GM0/(ph+Math.sqrt(ph*ph-lamN*lamN)), fy/GM0);
     webs.forEach(w=>{
       const left=Math.max(0,w.x*1000-w.b1/2), right=Math.max(0,(v.L-w.x)*1000-w.b1/2);
@@ -718,8 +809,8 @@ const REFS = [
   "Serviceability: 5.6.1 and Table 6 deflection limits for imposed load; 8.6.1.1 web slenderness d/t<sub>w</sub> ≤ 200ε without stiffeners.",
   "Analysis: linear elastic stiffness method with Euler–Bernoulli beam elements, uniform EI, exact statics for shear and moment."
 ];
-const SCOPE_NOTE = "Not covered: bending about the minor axis or biaxial bending, axial force, torsion (loads off the shear centre, including channels loaded on the web face), slender sections, monosymmetric or tapered members, holes in the tension flange (8.2.1.4), webs with transverse or longitudinal stiffeners and plate girder tension field action, bearing stiffener design, fatigue, crane girders, local bearing on circular tubes, and seismic design.";
-const DEFAULTS = {proj:"", mark:"B1", fam:"ISMB", sec:"ISMB 400", wD:600, wB:250, wtw:10, wtf:16, grade:"E250", sup:"ss", L:6, aL:0, aR:0, xi:3,
+const SCOPE_NOTE = "Not covered: bending about the minor axis or biaxial bending, axial force, torsion (loads off the shear centre, including channels loaded on the web face), slender sections, monosymmetric or tapered members, holes in the tension flange (8.2.1.4), webs with transverse or longitudinal stiffeners and plate girder tension field action, bearing stiffener design, fatigue, crane girders, local bearing on circular tubes, and seismic design. For built-up sections, the welds of the cover plates, plate curtailment and the ties that make twin members act together are not designed.";
+const DEFAULTS = {proj:"", mark:"B1", fam:"ISMB", sec:"ISMB 400", wD:600, wB:250, wtw:10, wtf:16, bType:"plate", bFam:"ISMB", bSec:"ISMB 600", bp:250, tp:16, gap:100, grade:"E250", sup:"ss", L:6, aL:0, aR:0, xi:3,
   sw:"yes", gD:1.5, gL:1.5, lat:"unrestrained", Lu:3, t15:4, cSup:3, cTip:0, dest:"normal", C1:1.0, b1s:100, b1p:75, defl:"nc", nSpan:300, nCant:150};
 const DEFAULT_LOADS = [
   {type:"U", cs:"D", a:0, b:6, w1:8},
@@ -727,7 +818,7 @@ const DEFAULT_LOADS = [
   {type:"P", cs:"L", x:2, P:30}
 ];
 const ids = Object.keys(DEFAULTS);
-const NUM = new Set(["wD","wB","wtw","wtf","L","aL","aR","xi","gD","gL","Lu","t15","cSup","cTip","C1","b1s","b1p","nSpan","nCant"]);
+const NUM = new Set(["wD","wB","wtw","wtf","bp","tp","gap","L","aL","aR","xi","gD","gL","Lu","t15","cSup","cTip","C1","b1s","b1p","nSpan","nCant"]);
 const $ = id => document.getElementById(id);
 const esc2 = s => String(s).replace(/[&<>"]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[ch]));
 const today = () => new Date().toISOString().slice(0,10);
@@ -801,11 +892,14 @@ function inputProblems(v){
   if(v.lat!=="restrained" && v.C1<1) p.push("C1 cannot be less than 1.0");
   if(!v.loads.length) p.push("add at least one load");
   if(v.fam==="WELD" && !secProps(v,SECTIONS)) p.push("enter the plate sizes of the welded section");
+  if(v.fam==="BUILT" && !secProps(v,SECTIONS)) p.push("enter valid sizes for the built-up section");
   return [...new Set(p)];
 }
 function showRows(){
   const fam=$("fam").value, sup=$("sup").value, lat=$("lat").value;
-  $("weld_rows").hidden = fam!=="WELD"; $("row_sec").hidden = fam==="WELD";
+  $("weld_rows").hidden = fam!=="WELD"; $("row_sec").hidden = fam==="WELD"||fam==="BUILT";
+  $("bu_rows").hidden = fam!=="BUILT"; $("bu_box").hidden = !(fam==="WELD"||fam==="BUILT");
+  $("plate_rows").hidden = $("bType").value!=="plate"; $("gap_row").hidden = $("bType").value==="plate";
   $("ovh_rows").hidden = sup!=="ss"; $("row_xi").hidden = sup!=="cont2";
   $("ltb_rows").hidden = lat==="restrained";
   $("row_t15").hidden = sup==="cant"; $("row_cSup").hidden = sup!=="cant"; $("row_cTip").hidden = sup!=="cant";
@@ -813,11 +907,13 @@ function showRows(){
   $("defl_rows").hidden = $("defl").value!=="custom";
   const v=read(), sp=secProps(v,SECTIONS), cell=(t,x)=>`<div><span>${t}</span><b>${x}</b></div>`;
   if(sp){
-    const tmax=Math.max(sp.tf,sp.tw), G=GRADES[v.grade], fy=G.fy[tmax<20?0:tmax<=40?1:2];
+    const tmax=Math.max(sp.tf,sp.tw,sp.bu&&sp.bu.tp?sp.bu.tp:0), G=GRADES[v.grade], fy=G.fy[tmax<20?0:tmax<=40?1:2];
     $("props").innerHTML = cell("Mass", `${f(sp.mass,1)} kg/m`)+cell("D × b<sub>f</sub>", sp.kind==="O"?`Ø${f(sp.D,1)}`:`${f(sp.D,0)} × ${f(sp.B,0)}`)+cell(sp.kind==="O"||sp.kind==="R"?"t":"t<sub>w</sub> / t<sub>f</sub>", sp.kind==="O"||sp.kind==="R"?`${f(sp.t,1)} mm`:`${f(sp.tw,1)} / ${f(sp.tf,1)}`)
       +cell("I<sub>z</sub>", `${f(sp.Iz/1e4,0)} cm⁴`)+cell("Z<sub>p,z</sub>", `${f(sp.Zpz/1e3,1)} cm³`)+cell("I<sub>y</sub>", `${f(sp.Iy/1e4,1)} cm⁴`);
     $("fyNote").innerHTML = `Thickest element ${f(tmax,1)} mm, so f<sub>y</sub> = ${fy} MPa and f<sub>u</sub> = ${G.fu} MPa.`;
   } else { $("props").innerHTML=""; $("fyNote").textContent=""; }
+  if(fam==="WELD"||fam==="BUILT"){ $("props").innerHTML=""; buildBuilder(); }
+  $("props").hidden=!$("props").innerHTML;
 }
 
 // ---------- beam drawing ----------
@@ -905,6 +1001,7 @@ function plotSvgs(M){ if(M.early) return []; const s=diagramSvg(M); return [{svg
 
 // ---------- section drawing ----------
 function sectionSvg(sp){
+  if(sp.bu||sp.fam==="WELD") return buSectionSvg(sp);
   const S=Math.min(230/sp.D, 210/sp.B), W=Math.max(sp.B*S+190,300), H=sp.D*S+70, cx=70+sp.B*S/2, cy=28+sp.D*S/2, x0=cx-sp.B*S/2, y0=cy-sp.D*S/2;
   let s=`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" ${FONT} font-size="11" fill="#1d2329"><rect width="${W}" height="${H}" fill="#fff"/>`;
   const fill=`fill="#c9ccd1" stroke="#1d2329" stroke-width="1.2"`;
@@ -983,11 +1080,12 @@ function calculate(){
   render();
 }
 function findLightest(){
-  const v=read(); if(v.fam==="WELD") return toast("Pick a rolled section type to search its table.", true);
-  const probs=inputProblems(v).filter(p=>!/welded/.test(p)); if(probs.length) return toast("Fix the inputs first: "+probs[0]+".", true);
-  const rows=[...(SECTIONS[v.fam]||[])].sort((a,b)=>a[1]-b[1]);
-  for(const r of rows){ const R=design({...v,sec:r[0]},SECTIONS); if(R.allOk){ $("sec").value=r[0]; showRows(); calculate(); drawPreview(); return toast(`${r[0]} (${f(r[1],1)} kg/m) is the lightest ${v.fam} that passes every check.`); } }
-  toast(`No ${v.fam} section passes every check. Try a deeper type, add lateral restraints or use a higher grade.`, true);
+  const v=read(); if(v.fam==="WELD") return toast("Pick a rolled or built-up section type to search its table.", true);
+  const probs=inputProblems(v).filter(p=>!/welded|built-up/.test(p)); if(probs.length) return toast("Fix the inputs first: "+probs[0]+".", true);
+  const BU=v.fam==="BUILT", fam=BU?v.bFam:v.fam, rows=[...(SECTIONS[fam]||[])].sort((a,b)=>a[1]-b[1]);
+  for(const r of rows){ const R=design(BU?{...v,bSec:r[0]}:{...v,sec:r[0]},SECTIONS); if(R.allOk){ if(BU) $("bSec").value=r[0]; else $("sec").value=r[0]; showRows(); calculate(); drawPreview();
+    return toast(BU ? `${r[0]} is the lightest ${fam} member that passes every check with the present build-up (${R.sp.name}, ${f(R.sp.mass,1)} kg/m).` : `${r[0]} (${f(r[1],1)} kg/m) is the lightest ${v.fam} that passes every check.`); } }
+  toast(BU ? `No ${fam} member passes with the present build-up. Try thicker plates, a different build-up or more lateral restraint.` : `No ${v.fam} section passes every check. Try a deeper type, add lateral restraints or use a higher grade.`, true);
 }
 
 // ---------- state, buttons, exports ----------
@@ -1169,9 +1267,104 @@ function reportText(){
     strip(SCOPE_NOTE), "", "Developed by " + AUTHOR].join("\n");
 }
 
+// ---------- section builder ----------
+fillSelect($("bType"), Object.keys(BU_TYPES).map(k=>[k, BU_TYPES[k]]));
+function fillBFam(keep){
+  const t=$("bType").value, fams = (t==="btb"||t==="toe") ? BU_C_FAMS : BU_I_FAMS;
+  fillSelect($("bFam"), fams.map(k=>[k, FAMS[k].t]));
+  if(keep && fams.includes(keep)) $("bFam").value=keep;
+}
+function fillBSec(keep){
+  const rows=SECTIONS[$("bFam").value]||[];
+  fillSelect($("bSec"), rows.map(r=>[r[0], `${r[0]}  ·  ${Number(r[1]).toFixed(1)} kg/m`]));
+  if(keep && rows.some(r=>r[0]===keep)) $("bSec").value=keep;
+  else if(rows.length) $("bSec").value=rows[Math.min(rows.length-1, Math.floor(rows.length/2))][0];
+}
+const BFILL = `fill="#c9ccd1" stroke="#1d2329" stroke-width="1.1"`;
+function bIPath(X,Y,cx,D,B,tw,tf){ const p=[[cx-B/2,D/2],[cx+B/2,D/2],[cx+B/2,D/2-tf],[cx+tw/2,D/2-tf],[cx+tw/2,-D/2+tf],[cx+B/2,-D/2+tf],[cx+B/2,-D/2],[cx-B/2,-D/2],[cx-B/2,-D/2+tf],[cx-tw/2,-D/2+tf],[cx-tw/2,D/2-tf],[cx-B/2,D/2-tf]]; return "M"+p.map(([x,y])=>`${X(x).toFixed(1)},${Y(y).toFixed(1)}`).join(" L")+" Z"; }
+function bCPath(X,Y,xb,dir,D,B,tw,tf){ const p=[[0,D/2],[B,D/2],[B,D/2-tf],[tw,D/2-tf],[tw,-D/2+tf],[B,-D/2+tf],[B,-D/2],[0,-D/2]]; return "M"+p.map(([x,y])=>`${X(xb+dir*x).toFixed(1)},${Y(y).toFixed(1)}`).join(" L")+" Z"; }
+function bDim(a,b,y,t,fs,col="#4a5560"){ return `<line x1="${a}" y1="${y}" x2="${b}" y2="${y}" stroke="${col}" stroke-width="0.7"/><line x1="${a}" y1="${y-4}" x2="${a}" y2="${y+4}" stroke="${col}"/><line x1="${b}" y1="${y-4}" x2="${b}" y2="${y+4}" stroke="${col}"/><text x="${(a+b)/2}" y="${y-3}" text-anchor="middle" font-size="${fs}" fill="${col}">${t}</text>`; }
+// draws a welded or built-up section; o = {W, H, S (optional fixed scale), interactive, fs}
+function builderSvg(sp, o){
+  const fs=o.fs||9, W=o.W, H=o.H, wid=sp.bu&&sp.bu.W?sp.bu.W:sp.B;
+  const S=o.S || Math.min((W-80)/wid, (H-60)/sp.D), cx=W/2, cy=H/2-6, X=x=>cx+x*S, Y=y=>cy-y*S;
+  let s=`<rect width="${W}" height="${H}" fill="#fff"/>`;
+  const hs=(x,y,cur,key,sd)=>o.interactive?`<g class="drag" data-k="${key}" data-side="${sd||1}" style="cursor:${cur}"><circle cx="${x}" cy="${y}" r="9" fill="#000" fill-opacity="0"/><circle cx="${x}" cy="${y}" r="4.5" fill="#fff" stroke="#1f4e79" stroke-width="1.6"/></g>`:"";
+  if(!sp.bu){ // welded plate girder
+    s+=`<path d="${bIPath(X,Y,0,sp.D,sp.B,Math.max(sp.tw,1.2/S),Math.max(sp.tf,1.2/S))}" ${BFILL}/>`;
+    s+=bDim(X(-sp.B/2),X(sp.B/2),Y(-sp.D/2)+16,`b<tspan baseline-shift="sub" font-size="7">f</tspan> = ${f(sp.B,0)}`,fs);
+    s+=`<text transform="translate(${X(-sp.B/2)-12},${cy}) rotate(-90)" text-anchor="middle" font-size="${fs}" fill="#4a5560">D = ${f(sp.D,0)}</text>`;
+    s+=`<text x="${X(sp.tw/2)+6}" y="${cy+4}" font-size="${fs}" fill="#4a5560">t<tspan baseline-shift="sub" font-size="7">w</tspan> = ${f(sp.tw,0)}</text><text x="${X(sp.B/2)+6}" y="${Y(sp.D/2)+8}" font-size="${fs}" fill="#4a5560">t<tspan baseline-shift="sub" font-size="7">f</tspan> = ${f(sp.tf,0)}</text>`;
+    s+=hs(X(sp.B/2),Y(sp.D/2-sp.tf/2),"ew-resize","wB")+hs(cx,Y(sp.D/2),"ns-resize","wD");
+  } else if(sp.bu.type==="plate"){
+    const c=sp.bu.comp, b=sp.bu;
+    s+=`<path d="${bIPath(X,Y,0,c.D,c.B,c.tw,c.tf)}" ${BFILL}/>`;
+    [1,-1].forEach(sd=>{ const y0=sd>0?c.D/2:-c.D/2-b.tp; s+=`<rect x="${X(-b.bp/2)}" y="${Y(y0+b.tp)}" width="${b.bp*S}" height="${Math.max(b.tp*S,1.5)}" fill="#e3cf94" stroke="#7a5a00" stroke-width="1"/>`; });
+    s+=bDim(X(-b.bp/2),X(b.bp/2),Y(sp.D/2)-8,`plate ${f(b.bp,0)} × ${f(b.tp,0)}`,fs,"#7a5a00");
+    s+=bDim(X(-c.B/2),X(c.B/2),Y(-sp.D/2)+16,`b<tspan baseline-shift="sub" font-size="7">f</tspan> = ${f(c.B,0)}`,fs);
+    s+=`<text transform="translate(${X(-Math.max(c.B,b.bp)/2)-12},${cy}) rotate(-90)" text-anchor="middle" font-size="${fs}" fill="#4a5560">D = ${f(sp.D,0)}</text>`;
+    s+=hs(X(b.bp/2),Y(sp.D/2-b.tp/2),"ew-resize","bp")+hs(X(-b.bp/2),Y(sp.D/2-b.tp/2),"ew-resize","bp",-1);
+  } else {
+    const c=sp.bu.comp, b=sp.bu;
+    const comp = sd => b.type==="side" ? bIPath(X,Y,sd*b.e,c.D,c.B,c.tw,c.tf) : b.type==="toe" ? bCPath(X,Y,sd*(b.gap/2+c.B),-sd,c.D,c.B,c.tw,c.tf) : bCPath(X,Y,sd*b.gap/2,sd,c.D,c.B,c.tw,c.tf);
+    [-1,1].forEach(sd=>{ const hx=sd<0?X(-b.W/2):X(b.W/2-c.B); s+=`<g class="${o.interactive?"drag":""}" data-k="gap" data-side="${sd}" style="cursor:ew-resize">${o.interactive?`<rect x="${hx}" y="${Y(c.D/2)}" width="${c.B*S}" height="${c.D*S}" fill="#000" fill-opacity="0"/>`:""}<path d="${comp(sd)}" ${BFILL}/></g>`; });
+    [-1,1].forEach(sd=>s+=`<circle cx="${X(sd*b.e)}" cy="${cy}" r="2.4" fill="#1f4e79" pointer-events="none"/>`);
+    if(b.gap>0) s+=bDim(X(-b.gap/2),X(b.gap/2),cy-10,`g = ${f(b.gap,0)}`,fs,"#1f4e79");
+    s+=bDim(X(-b.W/2),X(b.W/2),Y(-sp.D/2)+16,`W = ${f(b.W,0)} mm`,fs);
+  }
+  s+=`<line x1="${X(-wid/2)-14}" y1="${cy}" x2="${X(wid/2)+14}" y2="${cy}" stroke="#b3261e" stroke-dasharray="6 3 1 3" stroke-width="0.8"/><text x="${X(wid/2)+16}" y="${cy+4}" font-size="${fs}" fill="#b3261e">z</text>`;
+  s+=`<line x1="${cx}" y1="${Y(sp.D/2)-10}" x2="${cx}" y2="${Y(-sp.D/2)+6}" stroke="#b3261e" stroke-dasharray="6 3 1 3" stroke-width="0.8"/>`;
+  return {svg:s, S};
+}
+let bdrag=null, bScale=null;
+function buildBuilder(){
+  const v=read(), sp=secProps(v,SECTIONS), svg=$("bu_svg");
+  $("bu_btns").innerHTML = v.fam==="WELD" ? "" : v.bType==="plate"
+    ? `<button type="button" class="ghost small" data-bb="bpf">Plate = flange width</button><button type="button" class="ghost small" data-bb="tp-">t<sub>p</sub> − 2</button><button type="button" class="ghost small" data-bb="tp+">t<sub>p</sub> + 2</button>`
+    : `<button type="button" class="ghost small" data-bb="eq">Gap for r<sub>y</sub> = r<sub>z</sub></button><button type="button" class="ghost small" data-bb="g-">− 5 mm</button><button type="button" class="ghost small" data-bb="g+">+ 5 mm</button>`;
+  $("bu_hint").textContent = v.fam==="WELD" ? "Drag the dots: the side dot sets the flange width, the top dot sets the depth." : v.bType==="plate" ? "Drag a dot at the plate edge to change the plate width." : "Drag either member sideways to change the gap.";
+  if(!sp){ svg.innerHTML=`<text x="170" y="100" text-anchor="middle" font-size="10" fill="#c0392b">Enter valid sizes for the section</text>`; $("bu_props").innerHTML=""; return; }
+  const W=340, H=210, r=builderSvg(sp,{W,H,interactive:true,S:bdrag?bdrag.S:null});
+  bScale=r.S; svg.setAttribute("viewBox",`0 0 ${W} ${H}`); svg.innerHTML=r.svg;
+  const cell=(t,x)=>`<div><span>${t}</span><b>${x}</b></div>`;
+  $("bu_props").innerHTML = cell("Mass",`${f(sp.mass,1)} kg/m`)+cell("A",`${f(sp.A/100,1)} cm²`)+cell("D",`${f(sp.D,0)} mm`)
+    +cell("I<sub>z</sub>",`${f(sp.Iz/1e4,0)} cm⁴`)+cell("Z<sub>p,z</sub>",`${f(sp.Zpz/1e3,1)} cm³`)+cell("r<sub>y</sub> / r<sub>z</sub>",`${f(sp.ry,1)} / ${f(sp.rz,1)}`);
+}
+$("bu_svg").addEventListener("pointerdown", e=>{
+  const g=e.target.closest(".drag"); if(!g) return;
+  e.preventDefault(); $("bu_svg").setPointerCapture(e.pointerId);
+  const rect=$("bu_svg").getBoundingClientRect(), k=g.dataset.k;
+  bdrag={k, x0:e.clientX, y0:e.clientY, v0:parseFloat($(k).value)||0, side:+g.dataset.side, sc:340/rect.width, S:bScale};
+});
+$("bu_svg").addEventListener("pointermove", e=>{
+  if(!bdrag) return;
+  const dx=(e.clientX-bdrag.x0)*bdrag.sc/bdrag.S*bdrag.side, dy=-(e.clientY-bdrag.y0)*bdrag.sc/bdrag.S;
+  let val = bdrag.k==="wD" ? bdrag.v0+2*dy : bdrag.v0+2*dx;
+  const step = bdrag.k==="gap" ? 1 : 5, min = bdrag.k==="gap" ? 0 : 20;
+  val=Math.max(min, Math.round(val/step)*step);
+  if(String(val)!==$(bdrag.k).value){ $(bdrag.k).value=val; changed(); }
+});
+["pointerup","pointercancel"].forEach(ev=>$("bu_svg").addEventListener(ev, ()=>{ if(bdrag){ bdrag=null; buildBuilder(); } }));
+$("bu_btns").addEventListener("click", e=>{
+  const b=e.target.closest("[data-bb]"); if(!b) return; const k=b.dataset.bb, v=read();
+  if(k==="bpf"){ const c=buComp(v,SECTIONS); if(c) $("bp").value=Math.round(c.B); }
+  if(k==="tp-") $("tp").value=Math.max(4,(parseFloat($("tp").value)||10)-2);
+  if(k==="tp+") $("tp").value=(parseFloat($("tp").value)||10)+2;
+  if(k==="g-") $("gap").value=Math.max(0,(parseFloat($("gap").value)||0)-5);
+  if(k==="g+") $("gap").value=(parseFloat($("gap").value)||0)+5;
+  if(k==="eq"){ const c=buComp(v,SECTIONS); if(c){ const g=buGapFor(c,v.bType,1); $("gap").value=Math.max(0,Math.ceil(g/5)*5); toast(g>0?`Gap set to ${$("gap").value} mm (r_y = r_z needs ${f(g,1)} mm).`:"r_y already exceeds r_z with no gap."); } }
+  changed();
+});
+$("bType").addEventListener("change", ()=>{ fillBFam($("bFam").value); fillBSec(null); });
+$("bFam").addEventListener("change", ()=>fillBSec(null));
+function buSectionSvg(sp){
+  const W=420, H=Math.round(Math.min(360, Math.max(240, 300*sp.D/(sp.bu&&sp.bu.W?sp.bu.W:sp.B)))), r=builderSvg(sp,{W,H,fs:10.5});
+  return {svg:`<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" ${FONT} font-size="11" fill="#1d2329">${r.svg}</svg>`, cap:`${sp.name}, to scale, dimensions in mm, bending about z-z`, w:W, h:H};
+}
+
 // ---------- wiring ----------
-ids.forEach(k => { if(k!=="sec") $(k).value = DEFAULTS[k]; });
-fillSec(DEFAULTS.sec);
+ids.forEach(k => { if(k!=="sec"&&k!=="bFam"&&k!=="bSec") $(k).value = DEFAULTS[k]; });
+fillSec(DEFAULTS.sec); fillBFam(DEFAULTS.bFam); fillBSec(DEFAULTS.bSec);
 renderLoads(DEFAULT_LOADS);
 $("refs").innerHTML = REFS.map(r=>`<li>${r}</li>`).join("");
 $("fam").addEventListener("change", () => fillSec(null));
